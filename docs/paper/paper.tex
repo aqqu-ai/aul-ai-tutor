@@ -1,0 +1,230 @@
+% !TEX TS-program = pdflatex
+% Компиляция (локально):
+%   pdflatex paper.tex
+%   bibtex paper
+%   pdflatex paper.tex
+%   pdflatex paper.tex
+%
+% Если используешь Overleaf: просто загрузи paper.tex и references.bib.
+
+\documentclass[11pt,a4paper]{article}
+
+% --- Language / encoding (для русского под pdfLaTeX)
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[russian,english]{babel}
+
+% --- Page / typography
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{microtype}
+
+% --- Math / tables / figures
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+
+% --- Lists
+\usepackage{enumitem}
+
+% --- Code listings
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  keepspaces=true,
+  showstringspaces=false,
+  upquote=true
+}
+
+% --- Links / bibliography
+\usepackage[hidelinks]{hyperref}
+\usepackage[numbers]{natbib}
+
+\title{
+  \textbf{Технический отчёт по разработке гибридной платформы SynQ AI Axiom}\\
+  \large на базе NVIDIA Jetson Orin Nano и интеграции ускорителя Hailo-8L:\\
+  \large архитектура, аппаратно-программные конфликты и стратегии восстановления
+}
+\author{
+  Alexandr Pavlenko\\
+  AISC TECHNOLOGIES LTD\\
+  \texttt{<email>}\\
+}
+\date{Версия: v0.1.0 \quad | \quad \today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Современная индустрия искусственного интеллекта смещается в сторону периферийных вычислений (Edge AI), где критичны энергоэффективность, автономность и воспроизводимость развёртывания. В проекте \textit{SynQ AI Axiom} ставится задача создания гибридного узла на базе \textit{NVIDIA Jetson Orin Nano} с расширением через \textit{Hailo-8L} по PCIe/M.2 для достижения суммарной производительности \textgreater 90 TOPS (оценка по заявленным peak-метрикам и конфигурации проекта).
+Ключевые риски интеграции связаны с несовместимостью версий драйвера и runtime (HailoRT), путями и именованием файлов прошивки, спецификой заголовков ядра JetPack 6.x, а также нестабильностью PCIe-линка при энергосбережении.
+Отчёт формализует наблюдаемые симптомы (err -2, err -22, err -110, status 0xFFFFFFFF), приводит диагностические процедуры и практический протокол восстановления.
+\end{abstract}
+
+\section{Введение}
+Edge AI требует баланса между производительностью и энергопотреблением, а также устойчивости к частичным отказам инфраструктуры (без постоянного интернет-доступа). Цель SynQ AI Axiom — создать воспроизводимый \textit{offline-first} узел, пригодный для задач компьютерного зрения, локального инференса языковых моделей (SLM) и оркестрации периферийных датчиков/исполнителей.
+
+В рамках этой работы рассматривается гибридная архитектура:
+\begin{itemize}[leftmargin=1.2em]
+  \item Jetson Orin Nano как центральный оркестратор (GPU/CPU, JetPack/Jetson Linux) \citep{nvidia_jetson_linux_docs};
+  \item Hailo-8L как энергоэффективный NPU-ускоритель инференса, подключаемый через PCIe/M.2 \citep{hailo_8l_page};
+  \item удалённые узлы Aris Node на базе ESP32-S3 как слой сенсорики и лёгких задач (low-latency).
+\end{itemize}
+
+\section{Архитектура системы SynQ AI Axiom и Aris Node}
+\subsection{Компоненты и роли}
+Таблица~\ref{tab:components} фиксирует целевую роль основных компонентов.
+
+\begin{table}[h]
+\centering
+\caption{Компоненты системы и функциональные роли}
+\label{tab:components}
+\begin{tabular}{p{4.0cm} p{3.0cm} p{7.0cm}}
+\toprule
+\textbf{Компонент} & \textbf{Характеристика} & \textbf{Назначение} \\
+\midrule
+NVIDIA Jetson Orin Nano (Super) & до 67 TOPS (peak) & Центральная обработка, оркестрация пайплайнов, интеграция сервисов и моделей \\
+Hailo-8L (PCIe/M.2) & типично \textasciitilde 13 TOPS\footnote{Для Hailo показатели TOPS зависят от конкретной модификации, условий измерения и методики подсчёта; в инженерном документе корректно фиксировать диапазон и методику.} & Ускорение инференса, разгрузка GPU Jetson, энергоэффективные видеопотоки \\
+ESP32-S3 (Aris Node) & Xtensa LX7 & Удалённые датчики, синхронизация времени, лёгкая обработка/реакции \\
+SSD & 2 TB & Веса моделей, локальные БД, логи, артефакты сборок \\
+SD & 1 TB & Системный раздел/резервирование (по выбранной стратегии) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Логическая схема (место под рисунок)}
+Для статьи рекомендуется вставить схему архитектуры (например, экспортированную из Mermaid в PDF/PNG).  
+Плейсхолдер:
+
+\begin{figure}[h]
+\centering
+\fbox{\begin{minipage}{0.9\linewidth}
+\vspace{1.2cm}
+\centering \textit{Placeholder: Architecture diagram}\\
+\textit{(export from Mermaid/TikZ and include via \textbackslash includegraphics)}
+\vspace{1.2cm}
+\end{minipage}}
+\caption{Высокоуровневая архитектура SynQ AI Axiom и Aris Node.}
+\label{fig:arch}
+\end{figure}
+
+\section{SLM vs LLM и требования к периферийной установке}
+Для edge-устройств практически важны \textit{малые языковые модели} (SLM), поскольку они допускают локальную установку и оптимизации (квантование, LoRA). LLM в большинстве случаев требуют дата-центров и существенно более дорогой инфраструктуры. В инженерном контексте это влияет на выбор моделей, методы компрессии и ограничения по памяти/теплопакету.
+
+\section{Механизмы оптимизации: квантование и LoRA}
+\subsection{Квантование}
+Упрощённая модель квантования веса $w$:
+\begin{equation}
+  w_q = \mathrm{round}\left(\frac{w}{s}\right) + z,
+\end{equation}
+где $s$ — scale, $z$ — zero-point. При необходимости приближение веса:
+\begin{equation}
+  w \approx s \cdot (w_q - z).
+\end{equation}
+
+\subsection{LoRA}
+LoRA вводит низкоранговое обновление $\Delta W \approx A B$ (при $rank \ll d$), что позволяет адаптировать модель без переобучения всех параметров. Для edge это критично: уменьшаются требования к памяти и времени обучения.
+
+\section{Интеграция Hailo-8L на Jetson: наблюдаемые ошибки и интерпретация}
+\subsection{Таксономия симптомов}
+Таблица~\ref{tab:errors} суммирует типовые коды ошибок и их вероятные причины (по инженерной диагностике и публичным кейсам сообщества) \citep{hailo_fw_identify_forum,hailo_fw_missing_forum,rpi_fw_timeout_forum}.
+
+\begin{table}[h]
+\centering
+\caption{Симптомы, коды ошибок и вероятные причины}
+\label{tab:errors}
+\begin{tabular}{p{2.5cm} p{6.0cm} p{6.5cm}}
+\toprule
+\textbf{Код/симптом} & \textbf{Проявление} & \textbf{Вероятная причина} \\
+\midrule
+err -2 (ENOENT) & Failed to write file \texttt{hailo/hailo8\_fw.bin} & Прошивка отсутствует по ожидаемому пути или имя не совпадает с ожиданием драйвера \\
+err -22 (EINVAL) & Invalid argument during IOCTL & Несовместимость версий драйвера и HailoRT, ABI mismatch, сборка под неверные headers \\
+status 0xFFFFFFFF & Timeout waiting for NNC firmware & Устройство не вышло в готовность: reset/PCIe конфликт/питание \\
+err -110 & Connection timed out & PCIe-таймаут: энергосбережение/нестабильный линк/питание \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Класс причин 1: firmware path/filename mismatch}
+Для Hailo типовой путь прошивки в Linux:
+\begin{itemize}[leftmargin=1.2em]
+  \item \texttt{/lib/firmware/hailo/}
+\end{itemize}
+Критично, чтобы имя файла прошивки совпадало с тем, что ожидает драйвер (например, \texttt{hailo8\_fw.bin}).
+Если драйвер ищет одно имя, а в системе лежит другое (или в другом каталоге), возникает err -2.
+
+\subsection{Класс причин 2: strict version coupling (driver vs HailoRT)}
+На практике драйвер Hailo и runtime HailoRT должны быть согласованы по версии. Смешивание версий часто проявляется ошибками IOCTL (err -22) и нестабильной инициализацией \citep{hailo_community_guides}.
+
+\subsection{Класс причин 3: заголовки ядра JetPack 6.x и symlink build}
+На Jetson нередко встречается несоответствие \texttt{/lib/modules/\$(uname -r)/build} реальным заголовкам ядра, что ломает сборку модулей. Типовое решение — восстановить корректную ссылку на исходники/headers ядра \citep{nvidia_forum_build_mismatch}.
+
+\section{Протокол диагностики и восстановления (Recovery Playbook)}
+Ниже приведён практический playbook, применимый как чеклист.
+
+\subsection{Проверка обнаружения устройства на PCIe}
+\begin{lstlisting}[language=bash,caption={Проверка видимости Hailo по PCIe}]
+lspci -nn | grep -i hailo
+# или (если известен vendor id):
+lspci -d 1e60:
+\end{lstlisting}
+
+\subsection{Проверка загрузки модуля и наличия /dev/hailo0}
+\begin{lstlisting}[language=bash,caption={Проверка драйвера и устройства}]
+lsmod | grep -i hailo
+dmesg | grep -i hailo
+ls -l /dev/hailo*
+\end{lstlisting}
+
+\subsection{Проверка прошивки}
+\begin{lstlisting}[language=bash,caption={Проверка пути прошивки}]
+ls -l /lib/firmware/hailo/
+# убедиться, что имя соответствует ожиданиям драйвера, например:
+# hailo8_fw.bin
+\end{lstlisting}
+
+\subsection{Стабилизация PCIe при энергосбережении}
+В ряде конфигураций помогает отключение power mode параметром модуля:
+\begin{lstlisting}[language=bash,caption={Отключение режима энергосбережения для стабилизации линка (пример)}]
+sudo modprobe hailo_pci no_power_mode=1
+dmesg | tail -n 200
+\end{lstlisting}
+\noindent
+\textit{Примечание: точное имя параметра зависит от версии драйвера; принцип — устранить “sleep/drop” устройства после инициализации.}
+
+\subsection{Валидация через HailoRT}
+\begin{lstlisting}[language=bash,caption={Проверка идентификации устройства через HailoRT}]
+hailortcli fw-control identify
+\end{lstlisting}
+
+\section{Обсуждение и перспективы}
+Ключевой вывод: узкое место гетерогенного edge-узла — не только TOPS, а надёжность оркестрации драйверов/прошивок/ABI и воспроизводимость окружения. Для снижения рисков рекомендуется:
+\begin{itemize}[leftmargin=1.2em]
+  \item жёсткое \textit{version pinning} (JetPack/kernel/driver/HailoRT как единый комплект);
+  \item воспроизводимые сборки и “golden image”;
+  \item сбор диагностического пакета (logs bundle) для быстрого RCA;
+  \item применение RAG/внутренней базы знаний для уменьшения ошибок в инструкциях и регламенте эксплуатации.
+\end{itemize}
+
+\section{Заключение}
+SynQ AI Axiom — гетерогенная Edge‑платформа (Jetson + NPU + распределённые узлы), которая демонстрирует типичные проблемы реальной интеграции: firmware path mismatch, strict version coupling, особенности заголовков ядра JetPack 6.x и нестабильность PCIe при энергосбережении. Данный документ формализует симптомы и даёт практический протокол восстановления, пригодный для операционного внедрения и последующей стандартизации.
+
+\appendix
+\section{Appendix: Публичная коммуникация (LinkedIn, ENG template)}
+\noindent \textbf{Subject: Engineering Accountability: Lessons from Hailo-8L \& Jetson Orin Nano Integration}\\
+(Шаблон для публичного поста; не является частью научного вклада.)
+
+\bigskip
+\noindent \textit{Building the future of edge AI with AISC TECHNOLOGIES LTD is a journey defined by precision...}\\
+(Текст можно перенести в отдельный файл, если нужно.)
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+\end{document}
