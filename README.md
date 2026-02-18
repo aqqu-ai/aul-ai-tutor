@@ -4,6 +4,8 @@
 
 Autonomous offline AI tutor device for AI literacy in remote classrooms (local-first).
 
+**Roadmap:** see [ROADMAP.md](ROADMAP.md)
+
 ## What it is
 A local-only classroom device that runs an on-device LLM and delivers guided lessons without requiring internet connectivity.
 
