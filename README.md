@@ -1,3 +1,5 @@
+[![Release](https://img.shields.io/github/v/release/aqqu-ai/aul-ai-tutor)](https://github.com/aqqu-ai/aul-ai-tutor/releases)
+
 # aul-ai-tutor
 
 Autonomous offline AI tutor device for AI literacy in remote classrooms (local-first).
